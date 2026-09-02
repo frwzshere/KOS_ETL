@@ -8,15 +8,15 @@ from openpyxl.styles import PatternFill
 # 预编译正则，减少循环中的重复编译开销
 CLEAN_SOURCE_RE = re.compile(r'[\（\(].*?[\）\)]+$')
 DATE_RE = re.compile(r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})')
-BRACKET_RE = re.compile(r'[\（\(\[\【\{].*?[\）\)\ formulation\]\】\}]')
+# 预编译正则：精准匹配各种中英文括号及其内部文字
+BRACKET_RE = re.compile(r'（.*?）|\(.*?\)|\[.*?\]|【.*?】|\{.*?\}')
 
 def clean_source(val):
     if not val:
         return ""
-    
     val_str = str(val).strip()
     
-    # 循环清除所有括号及其内容（防止出现嵌套或多组括号的情况）
+    # 循环清除所有括号及其内容（支持多重括号/嵌套括号）
     while True:
         cleaned_str = BRACKET_RE.sub('', val_str).strip()
         if cleaned_str == val_str:
