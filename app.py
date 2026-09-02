@@ -8,11 +8,22 @@ from openpyxl.styles import PatternFill
 # 预编译正则，减少循环中的重复编译开销
 CLEAN_SOURCE_RE = re.compile(r'[\（\(].*?[\）\)]+$')
 DATE_RE = re.compile(r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})')
+BRACKET_RE = re.compile(r'[\（\(\[\【\{].*?[\）\)\ formulation\]\】\}]')
 
 def clean_source(val):
     if not val:
         return ""
-    return CLEAN_SOURCE_RE.sub('', str(val)).strip()
+    
+    val_str = str(val).strip()
+    
+    # 循环清除所有括号及其内容（防止出现嵌套或多组括号的情况）
+    while True:
+        cleaned_str = BRACKET_RE.sub('', val_str).strip()
+        if cleaned_str == val_str:
+            break
+        val_str = cleaned_str
+        
+    return val_str
 
 def format_date_cell(cell):
     val = cell.value
