@@ -3,7 +3,7 @@ import io
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 def process_excel(file_bytes):
     wb = load_workbook(filename=io.BytesIO(file_bytes), data_only=False)
@@ -38,17 +38,39 @@ def process_excel(file_bytes):
     # ===== 辅助函数：格式化日期 =====
     def format_date_cell(cell):
         val = cell.value
+        if val is None:
+            return
+        # 如果是 datetime 对象
         if isinstance(val, datetime):
             cell.value = val.strftime("%Y/%m/%d")
-        elif isinstance(val, str):
-            # 尝试解析常见格式（可扩展）
+            return
+        # 如果是字符串，尝试多种格式
+        if isinstance(val, str):
             for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y"):
                 try:
                     dt = datetime.strptime(val, fmt)
                     cell.value = dt.strftime("%Y/%m/%d")
-                    break
+                    return
                 except ValueError:
                     continue
+            # 如果字符串是 "2024-01-01 12:34" 这种带时间的，可以截取日期部分
+            try:
+                dt = datetime.strptime(val.split()[0], "%Y-%m-%d")
+                cell.value = dt.strftime("%Y/%m/%d")
+                return
+            except:
+                pass
+        # 如果是数字（Excel 日期序列），转换为日期
+        if isinstance(val, (int, float)):
+            # Excel 1900 日期系统（注意：Excel 1900 年有 bug，但通常可直接用）
+            try:
+                # 如果是 > 59，减去 1 天修正 1900 年闰年问题
+                excel_base = datetime(1899, 12, 30)
+                delta = timedelta(days=val)
+                dt = excel_base + delta
+                cell.value = dt.strftime("%Y/%m/%d")
+            except:
+                pass
 
     # ===== 2. 处理“DOU+”表 =====
     if "DOU+" in wb.sheetnames:
