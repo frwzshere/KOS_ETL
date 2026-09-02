@@ -29,42 +29,62 @@ def process_excel(file_bytes):
     red_fill = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
 
     # ===== 辅助函数：清理客户来源（去掉末尾括号） =====
-    def clean_source(val):
-        if val is None:
-            return ""
-        s = str(val)
-        return re.sub(r'[（(][^）)]*[）)]$', '', s).strip()
-
-    # ===== 辅助函数：格式化日期 =====
     def format_date_cell(cell):
         val = cell.value
         if val is None:
             return
-        # 如果是 datetime 对象
+    
+        # 如果是 datetime 对象，直接格式化
         if isinstance(val, datetime):
             cell.value = val.strftime("%Y/%m/%d")
             return
-        # 如果是字符串，尝试多种格式
+    
+        # 如果是字符串
         if isinstance(val, str):
-            for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y"):
+            # 尝试多种常见格式（含时间）
+            # 注意：有些格式用 / 或 - 分隔，也可能有空格+时间
+            patterns = [
+                "%Y/%m/%d %H:%M:%S",   # 2026/08/31 11:02:34
+                "%Y/%m/%d %H:%M",      # 2026/08/31 11:02
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d %H:%M",
+                "%Y/%m/%d",            # 2026/08/31
+                "%Y-%m-%d",            # 2026-08-31
+                "%d/%m/%Y",            # 31/08/2026
+                "%d-%m-%Y",
+                "%m/%d/%Y",            # 08/31/2026（美国格式）
+            ]
+            for fmt in patterns:
                 try:
                     dt = datetime.strptime(val, fmt)
                     cell.value = dt.strftime("%Y/%m/%d")
                     return
                 except ValueError:
                     continue
-            # 如果字符串是 "2024-01-01 12:34" 这种带时间的，可以截取日期部分
-            try:
-                dt = datetime.strptime(val.split()[0], "%Y-%m-%d")
-                cell.value = dt.strftime("%Y/%m/%d")
-                return
-            except:
-                pass
-        # 如果是数字（Excel 日期序列），转换为日期
+    
+            # 如果上述都失败，尝试用正则提取日期部分（比如 "2026/8/31 11:02" 中的 "2026/8/31"）
+            import re
+            match = re.search(r'(\d{4}[/-]\d{1,2}[/-]\d{1,2})', val)
+            if match:
+                date_part = match.group(1)
+                # 递归调用自己处理纯日期部分
+                # 注意：防止无限递归，但这里因为 date_part 是纯日期，会进入下一个分支
+                # 我们直接再次调用 format_date_cell 但传入一个临时单元格？不，这里我们直接解析该日期部分
+                # 更简单：构造一个虚拟单元格？繁琐。直接在这里解析
+                for fmt in ("%Y/%m/%d", "%Y-%m-%d"):
+                    try:
+                        dt = datetime.strptime(date_part, fmt)
+                        cell.value = dt.strftime("%Y/%m/%d")
+                        return
+                    except ValueError:
+                        continue
+            # 如果还不行，保留原值
+            return
+    
+        # 如果是数字（Excel 日期序列）
         if isinstance(val, (int, float)):
-            # Excel 1900 日期系统（注意：Excel 1900 年有 bug，但通常可直接用）
             try:
-                # 如果是 > 59，减去 1 天修正 1900 年闰年问题
+                from datetime import timedelta
                 excel_base = datetime(1899, 12, 30)
                 delta = timedelta(days=val)
                 dt = excel_base + delta
