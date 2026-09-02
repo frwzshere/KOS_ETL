@@ -27,71 +27,65 @@ def process_excel(file_bytes):
             name_map[str(nick)] = str(emp)
 
     red_fill = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
-
-    # ===== 辅助函数：清理客户来源（去掉末尾括号） =====
+    # 1. 补全缺失的 clean_source 函数（清除末尾括号及其内容，如 "昵称(备注)" -> "昵称"）
+    def clean_source(val):
+        if not val:
+            return ""
+        # 去除末尾括号及其中内容（支持中文括号和英文括号）
+        return re.sub(r'[\（\(].*?[\）\)]$', '', str(val)).strip()
+    
+    
+    # 2. 优化后的 format_date_cell 函数
     def format_date_cell(cell):
         val = cell.value
         if val is None:
             return
     
-        # 如果是 datetime 对象，直接格式化
+        # 如果本身就是 datetime 对象（Excel 自动识别的日期）
         if isinstance(val, datetime):
             cell.value = val.strftime("%Y/%m/%d")
             return
     
+        # 如果是数字（Excel 内部存储的日期序列号）
+        if isinstance(val, (int, float)):
+            try:
+                excel_base = datetime(1899, 12, 30)
+                dt = excel_base + timedelta(days=val)
+                cell.value = dt.strftime("%Y/%m/%d")
+            except:
+                pass
+            return
+    
         # 如果是字符串
         if isinstance(val, str):
-            # 尝试多种常见格式（含时间）
-            # 注意：有些格式用 / 或 - 分隔，也可能有空格+时间
+            val_str = val.strip()
+            
+            # 常见格式尝试
             patterns = [
-                "%Y/%m/%d %H:%M:%S",   # 2026/08/31 11:02:34
-                "%Y/%m/%d %H:%M",      # 2026/08/31 11:02
-                "%Y-%m-%d %H:%M:%S",
-                "%Y-%m-%d %H:%M",
-                "%Y/%m/%d",            # 2026/08/31
-                "%Y-%m-%d",            # 2026-08-31
-                "%d/%m/%Y",            # 31/08/2026
-                "%d-%m-%Y",
-                "%m/%d/%Y",            # 08/31/2026（美国格式）
+                "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M",
+                "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M",
+                "%Y/%m/%d", "%Y-%m-%d",
+                "%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y"
             ]
             for fmt in patterns:
                 try:
-                    dt = datetime.strptime(val, fmt)
+                    dt = datetime.strptime(val_str, fmt)
                     cell.value = dt.strftime("%Y/%m/%d")
                     return
                 except ValueError:
                     continue
     
-            # 如果上述都失败，尝试用正则提取日期部分（比如 "2026/8/31 11:02" 中的 "2026/8/31"）
-            import re
-            match = re.search(r'(\d{4}[/-]\d{1,2}[/-]\d{1,2})', val)
+            # 使用正则提取 YYYY/M/D 或 YYYY-M-D
+            match = re.search(r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})', val_str)
             if match:
-                date_part = match.group(1)
-                # 递归调用自己处理纯日期部分
-                # 注意：防止无限递归，但这里因为 date_part 是纯日期，会进入下一个分支
-                # 我们直接再次调用 format_date_cell 但传入一个临时单元格？不，这里我们直接解析该日期部分
-                # 更简单：构造一个虚拟单元格？繁琐。直接在这里解析
-                for fmt in ("%Y/%m/%d", "%Y-%m-%d"):
-                    try:
-                        dt = datetime.strptime(date_part, fmt)
-                        cell.value = dt.strftime("%Y/%m/%d")
-                        return
-                    except ValueError:
-                        continue
-            # 如果还不行，保留原值
-            return
-    
-        # 如果是数字（Excel 日期序列）
-        if isinstance(val, (int, float)):
-            try:
-                from datetime import timedelta
-                excel_base = datetime(1899, 12, 30)
-                delta = timedelta(days=val)
-                dt = excel_base + delta
-                cell.value = dt.strftime("%Y/%m/%d")
-            except:
-                pass
-
+                year, month, day = match.groups()
+                try:
+                    dt = datetime(int(year), int(month), int(day))
+                    cell.value = dt.strftime("%Y/%m/%d")
+                    return
+                except ValueError:
+                    pass
+                    
     # ===== 2. 处理“DOU+”表 =====
     if "DOU+" in wb.sheetnames:
         dou_sheet = wb["DOU+"]
