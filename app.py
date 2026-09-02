@@ -5,22 +5,25 @@ from datetime import datetime, timedelta
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 
-# 预编译正则：1. 提取日期
+# 1. 日期提取正则
 DATE_RE = re.compile(r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})')
 
-# 2. 涵盖所有常见中英文/全半角左括号与右括号（支持中英文混用，如 ‘（’ 与 ‘)’ 搭配）
-BRACKET_RE = re.compile(r'[\（\(\[\{\【［〔〖《].*?[\）\)\}\】\]］〕〗》]')
+# 2. 括号匹配正则（涵盖所有中英文/半全角括号）
+BRACKET_RE = re.compile(r'（.*?）|\(.*?\)|\[.*?\]|【.*?】|\{.*?\}|［.*?］|〔.*?〕|〖.*?〗|《.*?》')
 
-# 需要从字符串两端剥离的连词符、标点及空格集合
-STRIP_CHARS = ' \t\r\n\xa0\u3000-_—–~～/|\\,.，。；;：:'
+# 3. 两端剥离字符集合（包含空格、换行、各种连字符 - _ — – ~ ～ 、斜杠及常见标点）
+STRIP_CHARS = ' \t\r\n\xa0\u3000-_—–~～/|\\,.，。；;：:!！?？'
+
+# 4. 纯字符提取正则（仅保留中文、英文字母、数字）
+PURE_CHAR_RE = re.compile(r'[^\u4e00-\u9fa5a-zA-Z0-9]')
+
 
 def clean_source(val):
+    """第一层清洗：去除括号及内容，并剥离首尾 `-` `~` 等特殊符号"""
     if not val:
         return ""
-    # 统一替换全角/不可见空格
     val_str = str(val).replace('\xa0', ' ').replace('\u3000', ' ').strip()
     
-    # 循环清除所有中英文括号及其内容（支持多重/嵌套/混用括号）
     while True:
         cleaned_str = BRACKET_RE.sub('', val_str)
         cleaned_str = cleaned_str.strip(STRIP_CHARS)
@@ -30,24 +33,41 @@ def clean_source(val):
         
     return val_str
 
-def match_person(source_val, name_map):
-    """多层兜底人员匹配函数"""
+
+def to_pure_chars(val_str):
+    """第三层兜底：提取纯文本（彻底抹去所有 - ~ _ 符号、标点与空格，转小写）"""
+    if not val_str:
+        return ""
+    cleaned = clean_source(val_str)
+    return PURE_CHAR_RE.sub('', cleaned).lower()
+
+
+def match_person(source_val, name_map, norm_name_map):
+    """三层递进人员匹配逻辑"""
     if not source_val:
         return None
     
-    # 层级 1：清洗括号和末尾连字符后精准匹配
-    cleaned = clean_source(source_val)
+    source_str = str(source_val).strip()
+    
+    # 【层级 1】：清洗括号与首尾 `-` `~` 符号后精确匹配
+    cleaned = clean_source(source_str)
     if cleaned in name_map:
         return name_map[cleaned]
     
-    # 层级 2：按连字符/空格切分，尝试提取首个核心词匹配（处理 CAT卡特武-华北利星行 这种无括号连字符格式）
+    # 【层级 2】：按连字符（- ~ _ / | 空格等）截取前半部分匹配（解决 CAT卡特武-华北利星行 或 CAT卡特武~930884355）
     parts = re.split(r'[-_—–/|~～\s]+', cleaned)
     if parts and parts[0]:
         first_part = parts[0].strip(STRIP_CHARS)
         if first_part in name_map:
             return name_map[first_part]
             
+    # 【层级 3】：终极兜底——彻底无视 `-` `~` 标点空格匹配（解决 CAT-卡特武 vs CAT卡特武，或 ~CAT卡特武~）
+    pure_source = to_pure_chars(source_str)
+    if pure_source and pure_source in norm_name_map:
+        return norm_name_map[pure_source]
+        
     return None
+
 
 def format_date_cell(cell):
     val = cell.value
@@ -106,7 +126,6 @@ def process_excel(file_bytes):
     wb = load_workbook(filename=io.BytesIO(file_bytes), data_only=False)
     sheet_names = wb.sheetnames
 
-    # 检查必要工作表
     if "留资" not in sheet_names:
         raise ValueError("工作簿中缺少“留资”工作表")
 
@@ -122,7 +141,7 @@ def process_excel(file_bytes):
         for row in range(2, dou_sheet.max_row + 1):
             format_date_cell(dou_sheet.cell(row, col_date))
 
-    # ===== 2. 构建映射字典（按需构建，供“留资”表使用） =====
+    # ===== 2. 构建映射字典 =====
     if "名单-昵称" not in sheet_names:
         raise ValueError("工作簿中缺少“名单-昵称”工作表")
 
@@ -134,19 +153,25 @@ def process_excel(file_bytes):
     except ValueError:
         raise ValueError("“名单-昵称”表中缺少“抖音昵称”或“员工姓名”列")
 
-    # 双向注册：同时录入原昵称和清洗后的昵称，提高容错率
     name_map = {}
+    norm_name_map = {}  # 纯字符无符字典，专治 - ~ 杂音
+    
     for row in range(2, name_sheet.max_row + 1):
         nick = name_sheet.cell(row, col_nick).value
         emp = name_sheet.cell(row, col_emp).value
         if nick and emp:
             nick_str = str(nick).strip()
             emp_str = str(emp).strip()
+            
             name_map[nick_str] = emp_str
             
             cleaned_nick = clean_source(nick_str)
             if cleaned_nick:
                 name_map[cleaned_nick] = emp_str
+                
+            pure_nick = to_pure_chars(nick_str)
+            if pure_nick:
+                norm_name_map[pure_nick] = emp_str
 
     red_fill = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
 
@@ -169,7 +194,7 @@ def process_excel(file_bytes):
         source_val = liu_sheet.cell(row, col_source_liu).value
         person_cell = liu_sheet.cell(row, col_person_liu)
         
-        matched = match_person(source_val, name_map)
+        matched = match_person(source_val, name_map, norm_name_map)
         
         if matched:
             person_cell.value = matched
