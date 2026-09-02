@@ -5,25 +5,49 @@ from datetime import datetime, timedelta
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 
-# 预编译正则，减少循环中的重复编译开销
-CLEAN_SOURCE_RE = re.compile(r'[\（\(].*?[\）\)]+$')
+# 预编译正则：1. 提取日期
 DATE_RE = re.compile(r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})')
-# 预编译正则：精准匹配各种中英文括号及其内部文字
-BRACKET_RE = re.compile(r'（.*?）|\(.*?\)|\[.*?\]|【.*?】|\{.*?\}')
+
+# 2. 涵盖所有常见中英文/全半角左括号与右括号（支持中英文混用，如 ‘（’ 与 ‘)’ 搭配）
+BRACKET_RE = re.compile(r'[\（\(\[\{\【［〔〖《].*?[\）\)\}\】\]］〕〗》]')
+
+# 需要从字符串两端剥离的连词符、标点及空格集合
+STRIP_CHARS = ' \t\r\n\xa0\u3000-_—–~～/|\\,.，。；;：:'
 
 def clean_source(val):
     if not val:
         return ""
-    val_str = str(val).strip()
+    # 统一替换全角/不可见空格
+    val_str = str(val).replace('\xa0', ' ').replace('\u3000', ' ').strip()
     
-    # 循环清除所有括号及其内容（支持多重括号/嵌套括号）
+    # 循环清除所有中英文括号及其内容（支持多重/嵌套/混用括号）
     while True:
-        cleaned_str = BRACKET_RE.sub('', val_str).strip()
+        cleaned_str = BRACKET_RE.sub('', val_str)
+        cleaned_str = cleaned_str.strip(STRIP_CHARS)
         if cleaned_str == val_str:
             break
         val_str = cleaned_str
         
     return val_str
+
+def match_person(source_val, name_map):
+    """多层兜底人员匹配函数"""
+    if not source_val:
+        return None
+    
+    # 层级 1：清洗括号和末尾连字符后精准匹配
+    cleaned = clean_source(source_val)
+    if cleaned in name_map:
+        return name_map[cleaned]
+    
+    # 层级 2：按连字符/空格切分，尝试提取首个核心词匹配（处理 CAT卡特武-华北利星行 这种无括号连字符格式）
+    parts = re.split(r'[-_—–/|~～\s]+', cleaned)
+    if parts and parts[0]:
+        first_part = parts[0].strip(STRIP_CHARS)
+        if first_part in name_map:
+            return name_map[first_part]
+            
+    return None
 
 def format_date_cell(cell):
     val = cell.value
@@ -51,7 +75,7 @@ def format_date_cell(cell):
         if not val_str:
             return
 
-        # 优先使用正则直接提取年月日（最快且兼容单双数字月日）
+        # 优先使用正则提取年月日
         match = DATE_RE.search(val_str)
         if match:
             year, month, day = match.groups()
@@ -90,13 +114,11 @@ def process_excel(file_bytes):
     if "DOU+" in sheet_names:
         dou_sheet = wb["DOU+"]
         headers_dou = [cell.value for cell in dou_sheet[1]]
-        
         try:
             col_date = headers_dou.index("下单时间") + 1
         except ValueError:
             raise ValueError("“DOU+”表中缺少“下单时间”列")
 
-        # 仅遍历进行日期格式化
         for row in range(2, dou_sheet.max_row + 1):
             format_date_cell(dou_sheet.cell(row, col_date))
 
@@ -112,12 +134,19 @@ def process_excel(file_bytes):
     except ValueError:
         raise ValueError("“名单-昵称”表中缺少“抖音昵称”或“员工姓名”列")
 
+    # 双向注册：同时录入原昵称和清洗后的昵称，提高容错率
     name_map = {}
     for row in range(2, name_sheet.max_row + 1):
         nick = name_sheet.cell(row, col_nick).value
         emp = name_sheet.cell(row, col_emp).value
         if nick and emp:
-            name_map[str(nick)] = str(emp)
+            nick_str = str(nick).strip()
+            emp_str = str(emp).strip()
+            name_map[nick_str] = emp_str
+            
+            cleaned_nick = clean_source(nick_str)
+            if cleaned_nick:
+                name_map[cleaned_nick] = emp_str
 
     red_fill = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
 
@@ -129,19 +158,18 @@ def process_excel(file_bytes):
         col_date_liu = headers_liu.index("日期") + 1
         col_source_liu = headers_liu.index("客户来源") + 1
         col_person_liu = headers_liu.index("人员") + 1
-    except ValueError as e:
+    except ValueError:
         raise ValueError("“留资”表中缺少“日期”、“客户来源”或“人员”列")
 
     for row in range(2, liu_sheet.max_row + 1):
         # 日期格式化
         format_date_cell(liu_sheet.cell(row, col_date_liu))
         
-        # 人员映射
+        # 多层匹配人员
         source_val = liu_sheet.cell(row, col_source_liu).value
         person_cell = liu_sheet.cell(row, col_person_liu)
         
-        cleaned = clean_source(source_val)
-        matched = name_map.get(cleaned)
+        matched = match_person(source_val, name_map)
         
         if matched:
             person_cell.value = matched
